@@ -115,6 +115,8 @@ public:
     void RecordAsyncKeyFrame(KeyFrame* pKF, KeyFrame* pParent);
     void RecordAsyncMapPoint(MapPoint* pMP, KeyFrame* pReference);
     void AsyncLoopBarrier();
+    void PublishAsyncEraseMapPoints(
+        const std::vector<MapPoint*>& points) noexcept;
     int GetLastMapChange();
     void SetLastMapChange(int currentChangeId);
 

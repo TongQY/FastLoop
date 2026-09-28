@@ -257,6 +257,24 @@ public:
     int TrackedMapPoints(const int &minObs);
     MapPoint* GetMapPoint(const size_t &idx);
 
+    // TxLoop stages container mutations off-map and publishes them with
+    // allocation-free swaps while Map::mMutexMapUpdate is held.
+    struct AsyncFeatureState
+    {
+        std::vector<MapPoint*> map_points;
+    };
+
+    struct AsyncLoopEdgeState
+    {
+        std::set<KeyFrame*> loop_edges;
+        bool not_erase = false;
+    };
+
+    AsyncFeatureState CaptureAsyncFeatureState();
+    AsyncLoopEdgeState CaptureAsyncLoopEdgeState();
+    void PublishAsyncFeatureState(AsyncFeatureState&& state) noexcept;
+    void PublishAsyncLoopEdgeState(AsyncLoopEdgeState&& state) noexcept;
+
     // KeyPoint functions
     std::vector<size_t> GetFeaturesInArea(const float &x, const float  &y, const float  &r, const bool bRight = false) const;
     bool UnprojectStereo(int i, Eigen::Vector3f &x3D);

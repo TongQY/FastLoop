@@ -378,6 +378,21 @@ void Map::AsyncLoopBarrier()
         asyncloop::MutationKind::GraphTopology);
 }
 
+void Map::PublishAsyncEraseMapPoints(
+    const std::vector<MapPoint*>& points) noexcept
+{
+    try
+    {
+        unique_lock<mutex> lock(mMutexMap);
+        for(MapPoint* point : points)
+            mspMapPoints.erase(point);
+    }
+    catch(...)
+    {
+        std::terminate();
+    }
+}
+
 int Map::GetLastMapChange()
 {
     unique_lock<mutex> lock(mMutexMap);

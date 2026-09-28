@@ -123,6 +123,12 @@ struct CommitResult {
   }
 };
 
+class PreparedPublication {
+ public:
+  virtual ~PreparedPublication() = default;
+  virtual void publish() noexcept = 0;
+};
+
 class TransactionEngine {
  public:
   explicit TransactionEngine(std::size_t journal_capacity = 65536);
@@ -151,6 +157,11 @@ class TransactionEngine {
   // only blocking section on LocalMapping.
   CommitResult commit(const CommitPlan& plan,
                       const std::function<bool()>& apply);
+
+  // Preferred TxLoop path. Preparation, allocation and all fallible work must
+  // finish before this call. A valid publication cannot require rollback.
+  CommitResult commitPrepared(const CommitPlan& plan,
+                              PreparedPublication& publication);
 
   std::size_t journalSize() const;
 

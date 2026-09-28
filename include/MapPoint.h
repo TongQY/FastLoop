@@ -140,7 +140,22 @@ public:
     void SetBadFlag();
     bool isBad();
 
-    void Replace(MapPoint* pMP);    
+    void Replace(MapPoint* pMP);
+
+    struct AsyncFeatureState
+    {
+        std::map<KeyFrame*,std::tuple<int,int>> observations;
+        KeyFrame* reference_keyframe = nullptr;
+        int observation_count = 0;
+        int visible = 0;
+        int found = 0;
+        bool bad = false;
+        MapPoint* replaced = nullptr;
+    };
+
+    AsyncFeatureState CaptureAsyncFeatureState();
+    void PublishAsyncFeatureState(AsyncFeatureState&& state) noexcept;
+
     MapPoint* GetReplaced();
 
     void IncreaseVisible(int n=1);

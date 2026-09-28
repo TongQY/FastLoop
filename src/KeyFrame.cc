@@ -324,6 +324,51 @@ void KeyFrame::ReplaceMapPointMatch(const int &idx, MapPoint* pMP)
     mvpMapPoints[idx]=pMP;
 }
 
+KeyFrame::AsyncFeatureState KeyFrame::CaptureAsyncFeatureState()
+{
+    unique_lock<mutex> lock(mMutexFeatures);
+    AsyncFeatureState state;
+    state.map_points = mvpMapPoints;
+    return state;
+}
+
+KeyFrame::AsyncLoopEdgeState KeyFrame::CaptureAsyncLoopEdgeState()
+{
+    unique_lock<mutex> lock(mMutexConnections);
+    AsyncLoopEdgeState state;
+    state.loop_edges = mspLoopEdges;
+    state.not_erase = mbNotErase;
+    return state;
+}
+
+void KeyFrame::PublishAsyncFeatureState(AsyncFeatureState&& state) noexcept
+{
+    try
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        mvpMapPoints.swap(state.map_points);
+    }
+    catch(...)
+    {
+        std::terminate();
+    }
+}
+
+void KeyFrame::PublishAsyncLoopEdgeState(
+    AsyncLoopEdgeState&& state) noexcept
+{
+    try
+    {
+        unique_lock<mutex> lock(mMutexConnections);
+        mspLoopEdges.swap(state.loop_edges);
+        mbNotErase = state.not_erase;
+    }
+    catch(...)
+    {
+        std::terminate();
+    }
+}
+
 set<MapPoint*> KeyFrame::GetMapPoints()
 {
     unique_lock<mutex> lock(mMutexFeatures);

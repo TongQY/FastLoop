@@ -263,6 +263,40 @@ MapPoint* MapPoint::GetReplaced()
     return mpReplaced;
 }
 
+MapPoint::AsyncFeatureState MapPoint::CaptureAsyncFeatureState()
+{
+    unique_lock<mutex> lock(mMutexFeatures);
+    AsyncFeatureState state;
+    state.observations = mObservations;
+    state.reference_keyframe = mpRefKF;
+    state.observation_count = nObs;
+    state.visible = mnVisible;
+    state.found = mnFound;
+    state.bad = mbBad;
+    state.replaced = mpReplaced;
+    return state;
+}
+
+void MapPoint::PublishAsyncFeatureState(
+    AsyncFeatureState&& state) noexcept
+{
+    try
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        mObservations.swap(state.observations);
+        mpRefKF = state.reference_keyframe;
+        nObs = state.observation_count;
+        mnVisible = state.visible;
+        mnFound = state.found;
+        mbBad = state.bad;
+        mpReplaced = state.replaced;
+    }
+    catch(...)
+    {
+        std::terminate();
+    }
+}
+
 void MapPoint::Replace(MapPoint* pMP)
 {
     if(pMP->mnId==this->mnId)

@@ -127,6 +127,26 @@ CommitResult TransactionEngine::commit(const CommitPlan& plan,
   return CommitResult{CommitCode::Committed, ValidationResult{}, epoch_};
 }
 
+CommitResult TransactionEngine::commitPrepared(
+    const CommitPlan& plan,
+    PreparedPublication& publication) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const ValidationResult validation = validateLocked(plan);
+  if (!validation) {
+    return CommitResult{CommitCode::ValidationFailed, validation, epoch_};
+  }
+
+  publication.publish();
+
+  for (const WriteIntent& write : plan.writes) {
+    ++epoch_;
+    ++versions_[write.entity];
+    appendMutationLocked(
+        Mutation{epoch_, write.entity, write.kind, EntityKey{}});
+  }
+  return CommitResult{CommitCode::Committed, ValidationResult{}, epoch_};
+}
+
 std::size_t TransactionEngine::journalSize() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return journal_.size();

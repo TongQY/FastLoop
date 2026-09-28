@@ -173,6 +173,61 @@ void mutationJournalIsOrdered() {
   CHECK(mutations[1].related == kf(1));
 }
 
+class IntegerPublication final : public PreparedPublication {
+ public:
+  explicit IntegerPublication(int* value) : value_(value) {}
+
+  void publish() noexcept override {
+    *value_ = 42;
+    published = true;
+  }
+
+  bool published{false};
+
+ private:
+  int* value_;
+};
+
+void preparedPublicationRunsOnlyAfterValidation() {
+  TransactionEngine engine;
+  const EntityKey key = kf(17);
+  const Snapshot snapshot = engine.capture({key});
+
+  CommitPlan plan;
+  plan.snapshot_id = snapshot.id;
+  plan.snapshot_epoch = snapshot.epoch;
+  plan.read_set = snapshot.read_set;
+  plan.writes.push_back(
+      WriteIntent{key, engine.versionOf(key), MutationKind::Pose});
+
+  int value = 0;
+  IntegerPublication publication(&value);
+  const CommitResult committed =
+      engine.commitPrepared(plan, publication);
+  CHECK(committed.code == CommitCode::Committed);
+  CHECK(publication.published);
+  CHECK(value == 42);
+
+  const Snapshot stale = engine.capture({key});
+  engine.recordMutation(key, MutationKind::Pose);
+
+  CommitPlan stale_plan;
+  stale_plan.snapshot_id = stale.id;
+  stale_plan.snapshot_epoch = stale.epoch;
+  stale_plan.read_set = stale.read_set;
+  stale_plan.writes.push_back(
+      WriteIntent{key, stale.read_set.front().version,
+                  MutationKind::Pose});
+
+  int unchanged = 7;
+  IntegerPublication rejected(&unchanged);
+  const CommitResult failed =
+      engine.commitPrepared(stale_plan, rejected);
+  CHECK(failed.code == CommitCode::ValidationFailed);
+  CHECK(!rejected.published);
+  CHECK(unchanged == 7);
+}
+
 }  // namespace
 
 int main() {
@@ -184,6 +239,7 @@ int main() {
   rejectedApplyDoesNotAdvanceVersions();
   commitGateSerializesConcurrentWriters();
   mutationJournalIsOrdered();
+  preparedPublicationRunsOnlyAfterValidation();
 
   if (failures != 0) {
     std::cerr << failures << " test(s) failed\n";
