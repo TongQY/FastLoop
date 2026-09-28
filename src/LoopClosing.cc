@@ -28,6 +28,7 @@
 #include<mutex>
 #include<thread>
 #include <cstdlib>
+#include <exception>
 #include <unordered_map>
 #include <unordered_set>
 #include <omp.h>
@@ -36,6 +37,131 @@
 
 namespace ORB_SLAM3
 {
+
+namespace
+{
+
+class PreparedLoopPublication final
+    : public asyncloop::PreparedPublication
+{
+public:
+    typedef vector<OptimizerGPU::DetachedPoseUpdate,
+        Eigen::aligned_allocator<OptimizerGPU::DetachedPoseUpdate>>
+        PoseUpdates;
+    typedef vector<OptimizerGPU::DetachedPointUpdate,
+        Eigen::aligned_allocator<OptimizerGPU::DetachedPointUpdate>>
+        PointUpdates;
+
+    explicit PreparedLoopPublication(Map* map)
+        : map_(map)
+    {
+    }
+
+    void publish() noexcept override
+    {
+        try
+        {
+            for(const OptimizerGPU::DetachedPoseUpdate& update :
+                pose_updates)
+                update.keyframe->SetPose(update.pose);
+            for(const OptimizerGPU::DetachedPointUpdate& update :
+                point_updates)
+                update.map_point->SetWorldPos(update.position);
+
+            for(auto& state : keyframe_feature_states)
+                state.first->PublishAsyncFeatureState(
+                    std::move(state.second));
+            for(auto& state : map_point_feature_states)
+                state.first->PublishAsyncFeatureState(
+                    std::move(state.second));
+            for(auto& state : keyframe_loop_states)
+                state.first->PublishAsyncLoopEdgeState(
+                    std::move(state.second));
+
+            map_->PublishAsyncEraseMapPoints(erased_map_points);
+        }
+        catch(...)
+        {
+            // A prepared publication is deliberately fail-stop. Continuing
+            // after a partial publication would expose a torn map.
+            std::terminate();
+        }
+    }
+
+    Map* map_;
+    PoseUpdates pose_updates;
+    PointUpdates point_updates;
+    vector<pair<KeyFrame*, KeyFrame::AsyncFeatureState>>
+        keyframe_feature_states;
+    vector<pair<MapPoint*, MapPoint::AsyncFeatureState>>
+        map_point_feature_states;
+    vector<pair<KeyFrame*, KeyFrame::AsyncLoopEdgeState>>
+        keyframe_loop_states;
+    vector<MapPoint*> erased_map_points;
+};
+
+bool StageObservation(
+    KeyFrame* keyframe,
+    size_t feature_index,
+    MapPoint* map_point,
+    MapPoint* expected_current,
+    KeyFrame::AsyncFeatureState& keyframe_state,
+    MapPoint::AsyncFeatureState& point_state)
+{
+    if(!keyframe || !map_point ||
+       feature_index >= keyframe_state.map_points.size())
+        return false;
+
+    MapPoint*& slot = keyframe_state.map_points[feature_index];
+    if(expected_current)
+    {
+        if(slot != expected_current)
+            return false;
+    }
+    else if(slot && slot != map_point)
+    {
+        return false;
+    }
+    slot = map_point;
+
+    auto observation = point_state.observations.find(keyframe);
+    if(observation == point_state.observations.end())
+        observation = point_state.observations.insert(
+            make_pair(keyframe, make_tuple(-1, -1))).first;
+
+    const bool right_observation =
+        keyframe->NLeft != -1 &&
+        feature_index >= static_cast<size_t>(keyframe->NLeft);
+    int& stored_index = right_observation
+        ? get<1>(observation->second)
+        : get<0>(observation->second);
+    const int new_index = static_cast<int>(feature_index);
+    if(stored_index == new_index)
+        return true;
+    if(stored_index != -1)
+        return false;
+
+    stored_index = new_index;
+    if(right_observation)
+    {
+        ++point_state.observation_count;
+    }
+    else if(!keyframe->mpCamera2)
+    {
+        if(feature_index >= keyframe->mvuRight.size())
+            return false;
+        point_state.observation_count +=
+            keyframe->mvuRight[feature_index] >= 0 ? 2 : 1;
+    }
+    else
+    {
+        ++point_state.observation_count;
+    }
+    return true;
+}
+
+} // namespace
+
 
 LoopClosing::LoopClosing(Atlas *pAtlas, KeyFrameDatabase *pDB, ORBVocabulary *pVoc, const bool bFixScale, const bool bActiveLC):
     mbResetRequested(false), mbResetActiveMapRequested(false), mbFinishRequested(false), mbFinished(true), mpAtlas(pAtlas),
@@ -1705,50 +1831,247 @@ bool LoopClosing::CorrectLoopTransactional()
                   asyncloop::MutationKind::AddObservation);
     }
 
+    PreparedLoopPublication publication(pLoopMap);
+    vector<MapPoint*> descriptor_updates;
+    vector<MapPoint*> normal_updates;
+
+    try
+    {
+        publication.pose_updates = delta.poses;
+        publication.pose_updates.insert(
+            publication.pose_updates.end(),
+            rebased_poses.begin(), rebased_poses.end());
+        publication.point_updates = delta.points;
+        publication.point_updates.insert(
+            publication.point_updates.end(),
+            rebased_points.begin(), rebased_points.end());
+
+        unordered_map<MapPoint*, MapPoint*> replacement_by_loser;
+        vector<AsyncFusionReplacement> normalized_replacements;
+        normalized_replacements.reserve(fusion_plan.size());
+        for(const AsyncFusionReplacement& replacement : fusion_plan)
+        {
+            const auto inserted = replacement_by_loser.insert(
+                make_pair(replacement.loser, replacement.winner));
+            if(!inserted.second)
+            {
+                if(inserted.first->second != replacement.winner)
+                    return false;
+                continue;
+            }
+            normalized_replacements.push_back(replacement);
+        }
+
+        // Replacement chains make the winner state order-dependent. Reject
+        // them here; the serial fallback can handle the uncommon case.
+        for(const AsyncFusionReplacement& replacement :
+            normalized_replacements)
+            if(replacement_by_loser.count(replacement.winner))
+                return false;
+
+        map<KeyFrame*, KeyFrame::AsyncFeatureState>
+            staged_keyframes;
+        map<MapPoint*, MapPoint::AsyncFeatureState>
+            staged_points;
+
+        const auto keyframe_state =
+            [&](KeyFrame* keyframe) ->
+                KeyFrame::AsyncFeatureState&
+            {
+                auto found = staged_keyframes.find(keyframe);
+                if(found == staged_keyframes.end())
+                    found = staged_keyframes.insert(
+                        make_pair(
+                            keyframe,
+                            keyframe->CaptureAsyncFeatureState())).first;
+                return found->second;
+            };
+        const auto point_state =
+            [&](MapPoint* point) ->
+                MapPoint::AsyncFeatureState&
+            {
+                auto found = staged_points.find(point);
+                if(found == staged_points.end())
+                    found = staged_points.insert(
+                        make_pair(
+                            point,
+                            point->CaptureAsyncFeatureState())).first;
+                return found->second;
+            };
+
+        unordered_set<MapPoint*> descriptor_set;
+        unordered_set<MapPoint*> normal_set;
+        for(const auto& update : publication.point_updates)
+            if(normal_set.insert(update.map_point).second)
+                normal_updates.push_back(update.map_point);
+
+        for(const AsyncFusionReplacement& replacement :
+            normalized_replacements)
+        {
+            MapPoint::AsyncFeatureState& loser =
+                point_state(replacement.loser);
+            MapPoint::AsyncFeatureState& winner =
+                point_state(replacement.winner);
+            if(loser.bad || winner.bad)
+                return false;
+
+            const auto loser_observations = loser.observations;
+            for(const auto& observation : loser_observations)
+            {
+                KeyFrame* keyframe = observation.first;
+                if(!keyframe || keyframe->isBad() ||
+                   keyframe->GetMap() != pLoopMap)
+                    return false;
+
+                KeyFrame::AsyncFeatureState& features =
+                    keyframe_state(keyframe);
+                const int left_index = get<0>(observation.second);
+                const int right_index = get<1>(observation.second);
+                const bool winner_already_observed =
+                    winner.observations.count(keyframe) != 0;
+
+                const auto clear_loser_slot =
+                    [&](int index) -> bool
+                    {
+                        if(index < 0)
+                            return true;
+                        const size_t slot = static_cast<size_t>(index);
+                        if(slot >= features.map_points.size() ||
+                           features.map_points[slot] !=
+                               replacement.loser)
+                            return false;
+                        features.map_points[slot] = nullptr;
+                        return true;
+                    };
+
+                if(winner_already_observed)
+                {
+                    if(!clear_loser_slot(left_index) ||
+                       !clear_loser_slot(right_index))
+                        return false;
+                }
+                else
+                {
+                    if(left_index >= 0 &&
+                       !StageObservation(
+                           keyframe,
+                           static_cast<size_t>(left_index),
+                           replacement.winner,
+                           replacement.loser,
+                           features, winner))
+                        return false;
+                    if(right_index >= 0 &&
+                       !StageObservation(
+                           keyframe,
+                           static_cast<size_t>(right_index),
+                           replacement.winner,
+                           replacement.loser,
+                           features, winner))
+                        return false;
+                }
+            }
+
+            winner.visible += loser.visible;
+            winner.found += loser.found;
+            loser.observations.clear();
+            loser.observation_count = 0;
+            loser.bad = true;
+            loser.replaced = replacement.winner;
+            publication.erased_map_points.push_back(
+                replacement.loser);
+            if(descriptor_set.insert(replacement.winner).second)
+                descriptor_updates.push_back(replacement.winner);
+        }
+
+        for(const AsyncObservationAddition& addition :
+            observation_additions)
+        {
+            KeyFrame::AsyncFeatureState& features =
+                keyframe_state(addition.keyframe);
+            MapPoint::AsyncFeatureState& point =
+                point_state(addition.map_point);
+            if(point.bad ||
+               !StageObservation(
+                   addition.keyframe, addition.feature_index,
+                   addition.map_point, nullptr, features, point))
+                return false;
+            if(descriptor_set.insert(addition.map_point).second)
+                descriptor_updates.push_back(addition.map_point);
+        }
+
+        publication.keyframe_feature_states.reserve(
+            staged_keyframes.size());
+        for(auto& state : staged_keyframes)
+            publication.keyframe_feature_states.push_back(
+                make_pair(state.first, std::move(state.second)));
+
+        publication.map_point_feature_states.reserve(
+            staged_points.size());
+        for(auto& state : staged_points)
+            publication.map_point_feature_states.push_back(
+                make_pair(state.first, std::move(state.second)));
+
+        KeyFrame::AsyncLoopEdgeState matched_loop_state =
+            mpLoopMatchedKF->CaptureAsyncLoopEdgeState();
+        KeyFrame::AsyncLoopEdgeState current_loop_state =
+            mpCurrentKF->CaptureAsyncLoopEdgeState();
+        matched_loop_state.loop_edges.insert(mpCurrentKF);
+        current_loop_state.loop_edges.insert(mpLoopMatchedKF);
+        matched_loop_state.not_erase = true;
+        current_loop_state.not_erase = true;
+        publication.keyframe_loop_states.reserve(2);
+        publication.keyframe_loop_states.push_back(
+            make_pair(
+                mpLoopMatchedKF, std::move(matched_loop_state)));
+        publication.keyframe_loop_states.push_back(
+            make_pair(
+                mpCurrentKF, std::move(current_loop_state)));
+    }
+    catch(const std::exception& error)
+    {
+        cerr << "AsyncLoop preparation failed: "
+             << error.what() << endl;
+        return false;
+    }
+    catch(...)
+    {
+        cerr << "AsyncLoop preparation failed with unknown error"
+             << endl;
+        return false;
+    }
+
+    add_write(
+        {asyncloop::EntityKind::Map, pLoopMap->GetId()},
+        asyncloop::MutationKind::GraphTopology);
+    add_write(
+        {asyncloop::EntityKind::KeyFrame, mpLoopMatchedKF->mnId},
+        asyncloop::MutationKind::GraphTopology);
+    add_write(
+        {asyncloop::EntityKind::KeyFrame, mpCurrentKF->mnId},
+        asyncloop::MutationKind::GraphTopology);
+
     const auto commit_start = std::chrono::steady_clock::now();
     const asyncloop::CommitResult result =
-        pLoopMap->AsyncLoopTransactions().commit(
-            commit_plan,
-            [&]()
-            {
-                for(const auto& update : delta.poses)
-                    update.keyframe->SetPose(update.pose);
-                for(const auto& update : rebased_poses)
-                    update.keyframe->SetPose(update.pose);
-                for(const auto& update : delta.points)
-                    update.map_point->SetWorldPos(update.position);
-                for(const auto& update : rebased_points)
-                    update.map_point->SetWorldPos(update.position);
+        pLoopMap->AsyncLoopTransactions().commitPrepared(
+            commit_plan, publication);
 
-                for(const AsyncFusionReplacement& replacement : fusion_plan)
-                    replacement.loser->Replace(replacement.winner);
+    if(result)
+    {
+        // These are derived caches, not transaction-owned topology. They are
+        // rebuilt only after the atomic publication has succeeded.
+        for(MapPoint* point : descriptor_updates)
+            if(point && !point->isBad())
+                point->ComputeDistinctiveDescriptors();
+        for(MapPoint* point : normal_updates)
+            if(point && !point->isBad())
+                point->UpdateNormalAndDepth();
+        for(KeyFrame* keyframe : mvpCurrentConnectedKFs)
+            if(keyframe && !keyframe->isBad())
+                keyframe->UpdateConnections();
 
-                for(const AsyncObservationAddition& addition :
-                    observation_additions)
-                {
-                    addition.keyframe->AddMapPoint(
-                        addition.map_point, addition.feature_index);
-                    addition.map_point->AddObservation(
-                        addition.keyframe, addition.feature_index);
-                    addition.map_point->ComputeDistinctiveDescriptors();
-                }
-
-                for(const auto& update : delta.points)
-                    if(!update.map_point->isBad())
-                        update.map_point->UpdateNormalAndDepth();
-                for(const auto& update : rebased_points)
-                    if(!update.map_point->isBad())
-                        update.map_point->UpdateNormalAndDepth();
-                for(KeyFrame* pKF : mvpCurrentConnectedKFs)
-                    if(pKF && !pKF->isBad())
-                        pKF->UpdateConnections();
-
-                mpLoopMatchedKF->AddLoopEdge(mpCurrentKF);
-                mpCurrentKF->AddLoopEdge(mpLoopMatchedKF);
-                pLoopMap->IncreaseChangeIndex();
-                mpAtlas->InformNewBigChange();
-                return true;
-            });
+        pLoopMap->IncreaseChangeIndex();
+        mpAtlas->InformNewBigChange();
+    }
 
     const auto commit_end = std::chrono::steady_clock::now();
     mvAsyncCaptureMs.push_back(

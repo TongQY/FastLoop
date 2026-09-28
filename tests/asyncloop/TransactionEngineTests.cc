@@ -13,6 +13,9 @@ using asyncloop::CommitPlan;
 using asyncloop::EntityKey;
 using asyncloop::EntityKind;
 using asyncloop::MutationKind;
+using asyncloop::PreparedPublication;
+using asyncloop::Snapshot;
+using asyncloop::CommitResult;
 using asyncloop::TransactionEngine;
 using asyncloop::ValidationCode;
 using asyncloop::WriteIntent;
@@ -207,6 +210,8 @@ void preparedPublicationRunsOnlyAfterValidation() {
   CHECK(committed.code == CommitCode::Committed);
   CHECK(publication.published);
   CHECK(value == 42);
+  CHECK(engine.versionOf(key) == 1);
+  CHECK(engine.currentEpoch() == committed.commit_epoch);
 
   const Snapshot stale = engine.capture({key});
   engine.recordMutation(key, MutationKind::Pose);

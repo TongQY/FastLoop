@@ -18,6 +18,7 @@
 
 
 #include "Map.h"
+#include <exception>
 
 #include<mutex>
 

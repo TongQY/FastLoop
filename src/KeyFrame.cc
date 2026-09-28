@@ -17,6 +17,7 @@
 */
 
 #include "KeyFrame.h"
+#include <exception>
 #include "Converter.h"
 #include "ImuTypes.h"
 #include<mutex>

@@ -17,6 +17,7 @@
 */
 
 #include "MapPoint.h"
+#include <exception>
 #include "ORBmatcher.h"
 
 #include<mutex>
@@ -265,7 +266,9 @@ MapPoint* MapPoint::GetReplaced()
 
 MapPoint::AsyncFeatureState MapPoint::CaptureAsyncFeatureState()
 {
-    unique_lock<mutex> lock(mMutexFeatures);
+    unique_lock<mutex> feature_lock(mMutexFeatures, defer_lock);
+    unique_lock<mutex> position_lock(mMutexPos, defer_lock);
+    lock(feature_lock, position_lock);
     AsyncFeatureState state;
     state.observations = mObservations;
     state.reference_keyframe = mpRefKF;
@@ -282,7 +285,9 @@ void MapPoint::PublishAsyncFeatureState(
 {
     try
     {
-        unique_lock<mutex> lock(mMutexFeatures);
+        unique_lock<mutex> feature_lock(mMutexFeatures, defer_lock);
+        unique_lock<mutex> position_lock(mMutexPos, defer_lock);
+        lock(feature_lock, position_lock);
         mObservations.swap(state.observations);
         mpRefKF = state.reference_keyframe;
         nObs = state.observation_count;

@@ -136,14 +136,27 @@ CommitResult TransactionEngine::commitPrepared(
     return CommitResult{CommitCode::ValidationFailed, validation, epoch_};
   }
 
+  // Build the complete transaction metadata before publishing any external
+  // map state. Copies and container growth may throw; swaps and publish are
+  // the allocation-free commit point.
+  VersionMap prepared_versions = versions_;
+  std::deque<Mutation> prepared_journal = journal_;
+  Epoch prepared_epoch = epoch_;
+  for (const WriteIntent& write : plan.writes) {
+    ++prepared_epoch;
+    ++prepared_versions[write.entity];
+    prepared_journal.push_back(
+        Mutation{prepared_epoch, write.entity, write.kind, EntityKey{}});
+    while (prepared_journal.size() > journal_capacity_) {
+      prepared_journal.pop_front();
+    }
+  }
+
+  versions_.swap(prepared_versions);
+  journal_.swap(prepared_journal);
+  epoch_ = prepared_epoch;
   publication.publish();
 
-  for (const WriteIntent& write : plan.writes) {
-    ++epoch_;
-    ++versions_[write.entity];
-    appendMutationLocked(
-        Mutation{epoch_, write.entity, write.kind, EntityKey{}});
-  }
   return CommitResult{CommitCode::Committed, ValidationResult{}, epoch_};
 }
 
