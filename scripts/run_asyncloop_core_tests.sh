@@ -28,7 +28,7 @@ mkdir -p "${build_dir}"
 
 if [[ "${ASYNCLOOP_SANITIZE:-0}" == "1" ]]; then
   "${compiler}" "${flags[@]}" -fsanitize=address,undefined \
-    -fno-omit-frame-pointer "${sources[@]}" tests/AsyncControllerTests.cc \
+    -fno-omit-frame-pointer "${sources[@]}" tests/asyncloop/AsyncControllerTests.cc \
     -o "${build_dir}/controller_tests_sanitized"
   # LeakSanitizer may be unavailable in restricted/ptrace containers.
   ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}" \
