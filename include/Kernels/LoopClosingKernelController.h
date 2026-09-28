@@ -42,6 +42,13 @@ public:
     static int launchSearchByBoWKernel(ORB_SLAM3::KeyFrame *pKF1, ORB_SLAM3::KeyFrame *pKF2, vector<ORB_SLAM3::MapPoint *> &vpMatches12);
     static int launchSearchAndFuseKernel(vector<ORB_SLAM3::KeyFrame*> connectedKFs, vector<Sophus::Sim3f> connectedScws, const float th,
                                         vector<ORB_SLAM3::MapPoint*> vpMapPoints, vector<ORB_SLAM3::MapPoint*> &vpReplacePoints);
+    static int launchSearchAndFusePlan(
+                                        vector<ORB_SLAM3::KeyFrame*> connectedKFs,
+                                        vector<Sophus::Sim3f> connectedScws,
+                                        const float th,
+                                        vector<ORB_SLAM3::MapPoint*> vpMapPoints,
+                                        vector<ORB_SLAM3::MapPoint*> &vpReplacePoints,
+                                        vector<SearchAndFuseObservation> &observationAdditions);
     static void launchWarmUp();
         
     

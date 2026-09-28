@@ -94,6 +94,18 @@ int LoopClosingKernelController::launchSearchAndFuseKernel(vector<ORB_SLAM3::Key
     return nFused;
 }
 
+int LoopClosingKernelController::launchSearchAndFusePlan(
+    vector<ORB_SLAM3::KeyFrame*> connectedKFs,
+    vector<Sophus::Sim3f> connectedScws, const float th,
+    vector<ORB_SLAM3::MapPoint*> vpMapPoints,
+    vector<ORB_SLAM3::MapPoint*> &vpReplacePoints,
+    vector<SearchAndFuseObservation> &observationAdditions)
+{
+    return mpSearchAndFuseKernel->launchPlan(
+        connectedKFs, connectedScws, th, vpMapPoints, vpReplacePoints,
+        observationAdditions);
+}
+
 
 void LoopClosingKernelController::launchSearchByProjectionKernel(ORB_SLAM3::KeyFrame* pKF, const std::vector<ORB_SLAM3::MapPoint*> &vpPoints, Sophus::Sim3<float> &Scw1,
                                 const std::vector<ORB_SLAM3::KeyFrame*> &vpPointsKFs, std::vector<ORB_SLAM3::MapPoint*> &vpMatched, std::vector<ORB_SLAM3::KeyFrame*> &vpMatchedKF, int th, float ratioHamming,

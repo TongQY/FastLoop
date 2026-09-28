@@ -1496,6 +1496,18 @@ namespace ORB_SLAM3
     }
 
 
+    int ORBmatcher::GPUFusePlan(
+        vector<KeyFrame*> connectedKFs,
+        vector<Sophus::Sim3f> connectedScws,
+        vector<MapPoint*> vpMapPoints, const float th,
+        vector<MapPoint*> &vpReplacePoints,
+        vector<SearchAndFuseObservation> &observationAdditions)
+    {
+        return LoopClosingKernelController::launchSearchAndFusePlan(
+            connectedKFs, connectedScws, th, vpMapPoints,
+            vpReplacePoints, observationAdditions);
+    }
+
     int ORBmatcher::GPUFuse(vector<KeyFrame*> connectedKFs, vector<Sophus::Sim3f> connectedScws, vector<MapPoint*> vpMapPoints, const float th, vector<MapPoint*> &vpReplacePoints)
     {
         

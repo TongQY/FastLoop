@@ -1350,7 +1350,8 @@ int LoopClosing::FindMatchesByProjection(KeyFrame* pCurrentKF, KeyFrame* pMatche
 std::vector<LoopClosing::AsyncFusionReplacement>
 LoopClosing::PlanGPUSearchAndFuse(
     const KeyFrameAndPose &CorrectedPosesMap,
-    const vector<MapPoint*> &vpMapPoints)
+    const vector<MapPoint*> &vpMapPoints,
+    vector<AsyncObservationAddition> &observationAdditions)
 {
     std::vector<AsyncFusionReplacement> plan;
     if(CorrectedPosesMap.empty() || vpMapPoints.empty())
@@ -1369,9 +1370,17 @@ LoopClosing::PlanGPUSearchAndFuse(
 
     vector<MapPoint*> replace_points(
         vpMapPoints.size(), static_cast<MapPoint*>(nullptr));
-    matcher.GPUFuse(
+    vector<SearchAndFuseObservation> planned_observations;
+    matcher.GPUFusePlan(
         connected_keyframes, corrected_poses, vpMapPoints, 4.0f,
-        replace_points);
+        replace_points, planned_observations);
+    observationAdditions.reserve(
+        observationAdditions.size() + planned_observations.size());
+    for(const SearchAndFuseObservation& addition : planned_observations)
+        observationAdditions.push_back(
+            AsyncObservationAddition{
+                addition.keyframe, addition.feature_index,
+                addition.map_point});
 
     for(size_t i = 0; i < replace_points.size(); ++i)
     {
@@ -1460,7 +1469,8 @@ bool LoopClosing::CorrectLoopTransactional()
                     AsyncFusionReplacement{pCurrentPoint, pLoopPoint});
             else if(!pCurrentPoint)
                 observation_additions.push_back(
-                    AsyncObservationAddition{i, pLoopPoint});
+                    AsyncObservationAddition{
+                        mpCurrentKF, i, pLoopPoint});
         }
 
         vector<asyncloop::EntityKey> read_set;
@@ -1491,7 +1501,8 @@ bool LoopClosing::CorrectLoopTransactional()
 
     // Search produces only a plan. No MapPoint is replaced on this path.
     vector<AsyncFusionReplacement> fusion_plan =
-        PlanGPUSearchAndFuse(corrected_sim3, mvpLoopMapPoints);
+        PlanGPUSearchAndFuse(
+            corrected_sim3, mvpLoopMapPoints, observation_additions);
     fusion_plan.insert(
         fusion_plan.end(), initial_fusion.begin(), initial_fusion.end());
 
@@ -1640,7 +1651,9 @@ bool LoopClosing::CorrectLoopTransactional()
            replacement.winner->GetMap() != pLoopMap)
             return false;
     for(const AsyncObservationAddition& addition : observation_additions)
-        if(!addition.map_point || addition.map_point->isBad() ||
+        if(!addition.keyframe || addition.keyframe->isBad() ||
+           addition.keyframe->GetMap() != pLoopMap ||
+           !addition.map_point || addition.map_point->isBad() ||
            addition.map_point->GetMap() != pLoopMap)
             return false;
 
@@ -1682,6 +1695,15 @@ bool LoopClosing::CorrectLoopTransactional()
                    replacement.winner->mnId},
                   asyncloop::MutationKind::Replace);
     }
+    for(const AsyncObservationAddition& addition : observation_additions)
+    {
+        add_write({asyncloop::EntityKind::KeyFrame,
+                   addition.keyframe->mnId},
+                  asyncloop::MutationKind::AddObservation);
+        add_write({asyncloop::EntityKind::MapPoint,
+                   addition.map_point->mnId},
+                  asyncloop::MutationKind::AddObservation);
+    }
 
     const auto commit_start = std::chrono::steady_clock::now();
     const asyncloop::CommitResult result =
@@ -1704,10 +1726,10 @@ bool LoopClosing::CorrectLoopTransactional()
                 for(const AsyncObservationAddition& addition :
                     observation_additions)
                 {
-                    mpCurrentKF->AddMapPoint(
+                    addition.keyframe->AddMapPoint(
                         addition.map_point, addition.feature_index);
                     addition.map_point->AddObservation(
-                        mpCurrentKF, addition.feature_index);
+                        addition.keyframe, addition.feature_index);
                     addition.map_point->ComputeDistinctiveDescriptors();
                 }
 

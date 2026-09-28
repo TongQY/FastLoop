@@ -148,13 +148,15 @@ protected:
 
     struct AsyncObservationAddition
     {
+        KeyFrame* keyframe = nullptr;
         size_t feature_index = 0;
         MapPoint* map_point = nullptr;
     };
 
     std::vector<AsyncFusionReplacement> PlanGPUSearchAndFuse(
         const KeyFrameAndPose &CorrectedPosesMap,
-        const vector<MapPoint*> &vpMapPoints);
+        const vector<MapPoint*> &vpMapPoints,
+        vector<AsyncObservationAddition> &observationAdditions);
     bool CorrectLoopTransactional();
 
     void CorrectLoop();

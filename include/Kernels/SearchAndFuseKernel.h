@@ -12,6 +12,13 @@
 
 #define MAX_CONNECTED_KF_COUNT 40
 
+struct SearchAndFuseObservation
+{
+    ORB_SLAM3::KeyFrame* keyframe = nullptr;
+    ORB_SLAM3::MapPoint* map_point = nullptr;
+    size_t feature_index = 0;
+};
+
 
 class SearchAndFuseKernel{
 
@@ -20,10 +27,21 @@ class SearchAndFuseKernel{
         void shutdown();
         int launch(std::vector<ORB_SLAM3::KeyFrame*> connectedKFs, vector<Sophus::Sim3f> connectedScws, float th,
                 std::vector<ORB_SLAM3::MapPoint*> &vpMapPoints, vector<ORB_SLAM3::MapPoint*> &vpReplacePoints);
+        int launchPlan(std::vector<ORB_SLAM3::KeyFrame*> connectedKFs,
+                vector<Sophus::Sim3f> connectedScws, float th,
+                std::vector<ORB_SLAM3::MapPoint*> &vpMapPoints,
+                vector<ORB_SLAM3::MapPoint*> &vpReplacePoints,
+                vector<SearchAndFuseObservation> &observationAdditions);
         void origFuse(ORB_SLAM3::KeyFrame *pKF, Sophus::Sim3f &Scw, const vector<ORB_SLAM3::MapPoint*> &vpPoints, const float th);
         int origDescriptorDistance(const cv::Mat &a, const cv::Mat &b);
 
     private:
+        int launchImpl(std::vector<ORB_SLAM3::KeyFrame*> connectedKFs,
+                vector<Sophus::Sim3f> connectedScws, float th,
+                std::vector<ORB_SLAM3::MapPoint*> &vpMapPoints,
+                vector<ORB_SLAM3::MapPoint*> &vpReplacePoints,
+                bool applyUpdates,
+                vector<SearchAndFuseObservation> *observationAdditions);
         bool memory_is_initialized;
         int *d_bestDists, *d_bestIdxs;
         int *bestDists, *bestIdxs;

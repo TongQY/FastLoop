@@ -213,8 +213,34 @@ __global__ void searchAndFuseKernel(Eigen::Vector3f* Ow, Sophus::SE3f *Tcw,
 }
 
 
-int SearchAndFuseKernel::launch(std::vector<ORB_SLAM3::KeyFrame*> connectedKFs, vector<Sophus::Sim3f> connectedScws, float th,
-                        std::vector<ORB_SLAM3::MapPoint*> &vpMapPoints, vector<ORB_SLAM3::MapPoint*> &vpReplacePoints)
+int SearchAndFuseKernel::launch(
+    std::vector<ORB_SLAM3::KeyFrame*> connectedKFs,
+    vector<Sophus::Sim3f> connectedScws, float th,
+    std::vector<ORB_SLAM3::MapPoint*> &vpMapPoints,
+    vector<ORB_SLAM3::MapPoint*> &vpReplacePoints)
+{
+    return launchImpl(connectedKFs, connectedScws, th, vpMapPoints,
+                      vpReplacePoints, true, nullptr);
+}
+
+int SearchAndFuseKernel::launchPlan(
+    std::vector<ORB_SLAM3::KeyFrame*> connectedKFs,
+    vector<Sophus::Sim3f> connectedScws, float th,
+    std::vector<ORB_SLAM3::MapPoint*> &vpMapPoints,
+    vector<ORB_SLAM3::MapPoint*> &vpReplacePoints,
+    vector<SearchAndFuseObservation> &observationAdditions)
+{
+    return launchImpl(connectedKFs, connectedScws, th, vpMapPoints,
+                      vpReplacePoints, false, &observationAdditions);
+}
+
+int SearchAndFuseKernel::launchImpl(
+    std::vector<ORB_SLAM3::KeyFrame*> connectedKFs,
+    vector<Sophus::Sim3f> connectedScws, float th,
+    std::vector<ORB_SLAM3::MapPoint*> &vpMapPoints,
+    vector<ORB_SLAM3::MapPoint*> &vpReplacePoints,
+    bool applyUpdates,
+    vector<SearchAndFuseObservation> *observationAdditions)
 {
     std::ofstream timing("./test/timing.txt", std::ios::app);
     // auto start1 = std::chrono::high_resolution_clock::now();
@@ -355,9 +381,14 @@ int SearchAndFuseKernel::launch(std::vector<ORB_SLAM3::KeyFrame*> connectedKFs, 
                         vpReplacePoints[iMP] = pMPinKF;
                     }
                 }
-                else{
+                else if (applyUpdates) {
                     pMP->AddObservation(pKF,bestIdx);
                     pKF->AddMapPoint(pMP, bestIdx);
+                }
+                else if (observationAdditions) {
+                    observationAdditions->push_back(
+                        SearchAndFuseObservation{
+                            pKF, pMP, static_cast<size_t>(bestIdx)});
                 }
                 nFused++;
             }
