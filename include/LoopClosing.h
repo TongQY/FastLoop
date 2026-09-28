@@ -31,6 +31,7 @@
 #include <boost/algorithm/string.hpp>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include "Thirdparty/g2o/g2o/types/types_seven_dof_expmap.h"
 
 namespace ORB_SLAM3
@@ -138,7 +139,24 @@ protected:
     void SearchAndFuse(const KeyFrameAndPose &CorrectedPosesMap, vector<MapPoint*> &vpMapPoints);
     void SearchAndFuse(const vector<KeyFrame*> &vConectedKFs, vector<MapPoint*> &vpMapPoints);
     void GPUSearchAndFuse(const KeyFrameAndPose &CorrectedPosesMap, vector<MapPoint*> &vpMapPoints);
-    
+
+    struct AsyncFusionReplacement
+    {
+        MapPoint* loser = nullptr;
+        MapPoint* winner = nullptr;
+    };
+
+    struct AsyncObservationAddition
+    {
+        size_t feature_index = 0;
+        MapPoint* map_point = nullptr;
+    };
+
+    std::vector<AsyncFusionReplacement> PlanGPUSearchAndFuse(
+        const KeyFrameAndPose &CorrectedPosesMap,
+        const vector<MapPoint*> &vpMapPoints);
+    bool CorrectLoopTransactional();
+
     void CorrectLoop();
 
     void MergeLocal();
@@ -241,6 +259,15 @@ protected:
 
     // To (de)activate LC
     bool mbActiveLC = true;
+
+    // AsyncLoop observability. These counters are deliberately independent of
+    // REGISTER_TIMES so runtime safety can be audited in release experiments.
+    std::atomic<unsigned long> mnAsyncLoopCommitted{0};
+    std::atomic<unsigned long> mnAsyncLoopFallback{0};
+    std::atomic<unsigned long> mnAsyncLoopConflict{0};
+    vector<double> mvAsyncCaptureMs;
+    vector<double> mvAsyncSolveMs;
+    vector<double> mvAsyncCommitMs;
 
 #ifdef REGISTER_LOOP
     string mstrFolderLoop;

@@ -27,6 +27,9 @@
 
 #include<mutex>
 #include<thread>
+#include <cstdlib>
+#include <unordered_map>
+#include <unordered_set>
 #include <omp.h>
 
 #include "Kernels/LoopClosingKernelController.h"
@@ -301,7 +304,11 @@ void LoopClosing::Run()
                         nLoop += 1;
 
 #endif
-                        CorrectLoop();
+                        if(!CorrectLoopTransactional())
+                        {
+                            ++mnAsyncLoopFallback;
+                            CorrectLoop();
+                        }
 #ifdef REGISTER_TIMES
                         std::chrono::steady_clock::time_point time_EndLoop = std::chrono::steady_clock::now();
 
@@ -1338,6 +1345,414 @@ int LoopClosing::FindMatchesByProjection(KeyFrame* pCurrentKF, KeyFrame* pMatche
 
     return num_matches;
 }
+
+
+std::vector<LoopClosing::AsyncFusionReplacement>
+LoopClosing::PlanGPUSearchAndFuse(
+    const KeyFrameAndPose &CorrectedPosesMap,
+    const vector<MapPoint*> &vpMapPoints)
+{
+    std::vector<AsyncFusionReplacement> plan;
+    if(CorrectedPosesMap.empty() || vpMapPoints.empty())
+        return plan;
+
+    ORBmatcher matcher(0.8);
+    vector<KeyFrame*> connected_keyframes;
+    vector<Sophus::Sim3f> corrected_poses;
+    connected_keyframes.reserve(CorrectedPosesMap.size());
+    corrected_poses.reserve(CorrectedPosesMap.size());
+    for(const auto& entry : CorrectedPosesMap)
+    {
+        connected_keyframes.push_back(entry.first);
+        corrected_poses.push_back(Converter::toSophus(entry.second));
+    }
+
+    vector<MapPoint*> replace_points(
+        vpMapPoints.size(), static_cast<MapPoint*>(nullptr));
+    matcher.GPUFuse(
+        connected_keyframes, corrected_poses, vpMapPoints, 4.0f,
+        replace_points);
+
+    for(size_t i = 0; i < replace_points.size(); ++i)
+    {
+        MapPoint* loser = replace_points[i];
+        MapPoint* winner = vpMapPoints[i];
+        if(loser && winner && loser != winner)
+            plan.push_back(AsyncFusionReplacement{loser, winner});
+    }
+    return plan;
+}
+
+bool LoopClosing::CorrectLoopTransactional()
+{
+    const char* disabled = std::getenv("ASYNCLOOP_DISABLE");
+    if(disabled && string(disabled) == "1")
+        return false;
+
+    if(!mpCurrentKF || !mpLoopMatchedKF || !mpLocalMapper ||
+       mpCurrentKF->isBad() || mpLoopMatchedKF->isBad())
+        return false;
+
+    Map* pLoopMap = mpCurrentKF->GetMap();
+    if(!pLoopMap || pLoopMap != mpLoopMatchedKF->GetMap())
+        return false;
+
+    // The first implementation intentionally supports the stereo/RGB-D
+    // inertial 4DoF path only. Other modes take the proven serial fallback.
+    if(!pLoopMap->IsInertial() || !pLoopMap->isImuInitialized() ||
+       !LoopClosingKernelController::searchAndFuseOnGPU || isRunningGBA())
+        return false;
+
+    const auto capture_start = std::chrono::steady_clock::now();
+
+    KeyFrameAndPose corrected_sim3;
+    KeyFrameAndPose non_corrected_sim3;
+    map<KeyFrame*, set<KeyFrame*>> loop_connections;
+    vector<AsyncFusionReplacement> initial_fusion;
+    vector<AsyncObservationAddition> observation_additions;
+    asyncloop::Snapshot transaction_snapshot;
+    OptimizerGPU::EssentialGraphSnapshot graph_snapshot;
+
+    {
+        unique_lock<mutex> map_lock(pLoopMap->mMutexMapUpdate);
+
+        if(mpCurrentKF->isBad() || mpLoopMatchedKF->isBad())
+            return false;
+
+        mvpCurrentConnectedKFs =
+            mpCurrentKF->GetVectorCovisibleKeyFrames();
+        mvpCurrentConnectedKFs.push_back(mpCurrentKF);
+
+        const Sophus::SE3f current_twc = mpCurrentKF->GetPoseInverse();
+        const Sophus::SE3f current_tcw = mpCurrentKF->GetPose();
+        corrected_sim3[mpCurrentKF] = mg2oLoopScw;
+        non_corrected_sim3[mpCurrentKF] = g2o::Sim3(
+            current_tcw.unit_quaternion().cast<double>(),
+            current_tcw.translation().cast<double>(), 1.0);
+
+        for(KeyFrame* pKF : mvpCurrentConnectedKFs)
+        {
+            if(!pKF || pKF == mpCurrentKF || pKF->isBad())
+                continue;
+            const Sophus::SE3f Tiw = pKF->GetPose();
+            const Sophus::SE3d Tic = (Tiw * current_twc).cast<double>();
+            const g2o::Sim3 Sic(
+                Tic.unit_quaternion(), Tic.translation(), 1.0);
+            corrected_sim3[pKF] = Sic * mg2oLoopScw;
+            non_corrected_sim3[pKF] = g2o::Sim3(
+                Tiw.unit_quaternion().cast<double>(),
+                Tiw.translation().cast<double>(), 1.0);
+        }
+
+        // A direct loop factor is always present even though fusion has not yet
+        // been published to the live covisibility graph.
+        loop_connections[mpCurrentKF].insert(mpLoopMatchedKF);
+        loop_connections[mpLoopMatchedKF].insert(mpCurrentKF);
+
+        for(size_t i = 0; i < mvpLoopMatchedMPs.size(); ++i)
+        {
+            MapPoint* pLoopPoint = mvpLoopMatchedMPs[i];
+            if(!pLoopPoint || pLoopPoint->isBad())
+                continue;
+            MapPoint* pCurrentPoint = mpCurrentKF->GetMapPoint(i);
+            if(pCurrentPoint && pCurrentPoint != pLoopPoint)
+                initial_fusion.push_back(
+                    AsyncFusionReplacement{pCurrentPoint, pLoopPoint});
+            else if(!pCurrentPoint)
+                observation_additions.push_back(
+                    AsyncObservationAddition{i, pLoopPoint});
+        }
+
+        vector<asyncloop::EntityKey> read_set;
+        read_set.push_back(
+            {asyncloop::EntityKind::Map, pLoopMap->GetId()});
+        const vector<KeyFrame*> all_keyframes =
+            pLoopMap->GetAllKeyFrames();
+        const vector<MapPoint*> all_points =
+            pLoopMap->GetAllMapPoints();
+        read_set.reserve(1 + all_keyframes.size() + all_points.size());
+        for(KeyFrame* pKF : all_keyframes)
+            if(pKF && !pKF->isBad())
+                read_set.push_back(
+                    {asyncloop::EntityKind::KeyFrame, pKF->mnId});
+        for(MapPoint* pMP : all_points)
+            if(pMP && !pMP->isBad())
+                read_set.push_back(
+                    {asyncloop::EntityKind::MapPoint, pMP->mnId});
+
+        transaction_snapshot =
+            pLoopMap->AsyncLoopTransactions().capture(read_set);
+        graph_snapshot = OptimizerGPU::CaptureEssentialGraph4DoF(
+            pLoopMap, mpLoopMatchedKF, mpCurrentKF,
+            non_corrected_sim3, corrected_sim3, loop_connections);
+    }
+
+    const auto capture_end = std::chrono::steady_clock::now();
+
+    // Search produces only a plan. No MapPoint is replaced on this path.
+    vector<AsyncFusionReplacement> fusion_plan =
+        PlanGPUSearchAndFuse(corrected_sim3, mvpLoopMapPoints);
+    fusion_plan.insert(
+        fusion_plan.end(), initial_fusion.begin(), initial_fusion.end());
+
+    OptimizerGPU::EssentialGraphDelta delta;
+    try
+    {
+        delta = OptimizerGPU::OptimizeEssentialGraph4DoFDetached(
+            graph_snapshot);
+    }
+    catch(const std::exception& error)
+    {
+        cerr << "AsyncLoop detached PGO failed: " << error.what() << endl;
+        return false;
+    }
+    catch(...)
+    {
+        cerr << "AsyncLoop detached PGO failed with unknown error" << endl;
+        return false;
+    }
+
+    const auto solve_end = std::chrono::steady_clock::now();
+
+    bool journal_complete = false;
+    const vector<asyncloop::Mutation> mutations =
+        pLoopMap->AsyncLoopTransactions().mutationsSince(
+            transaction_snapshot.epoch, &journal_complete);
+    if(!journal_complete)
+    {
+        ++mnAsyncLoopConflict;
+        return false;
+    }
+
+    unique_lock<mutex> map_lock(pLoopMap->mMutexMapUpdate);
+
+    vector<KeyFrame*> live_keyframes = pLoopMap->GetAllKeyFrames();
+    vector<MapPoint*> live_points = pLoopMap->GetAllMapPoints();
+    unordered_map<long unsigned int, KeyFrame*> keyframe_by_id;
+    unordered_map<long unsigned int, MapPoint*> point_by_id;
+    unordered_map<long unsigned int, Sophus::SE3f> corrected_tcw;
+    keyframe_by_id.reserve(live_keyframes.size());
+    point_by_id.reserve(live_points.size());
+    corrected_tcw.reserve(delta.poses.size() + mutations.size());
+
+    for(KeyFrame* pKF : live_keyframes)
+        if(pKF)
+            keyframe_by_id[pKF->mnId] = pKF;
+    for(MapPoint* pMP : live_points)
+        if(pMP)
+            point_by_id[pMP->mnId] = pMP;
+    for(const auto& update : delta.poses)
+        corrected_tcw[update.id] = update.pose;
+
+    vector<OptimizerGPU::DetachedPoseUpdate,
+        Eigen::aligned_allocator<OptimizerGPU::DetachedPoseUpdate>>
+        rebased_poses;
+    vector<OptimizerGPU::DetachedPointUpdate,
+        Eigen::aligned_allocator<OptimizerGPU::DetachedPointUpdate>>
+        rebased_points;
+
+    // Journal order makes parent-before-child append chains deterministic.
+    for(const asyncloop::Mutation& mutation : mutations)
+    {
+        if(mutation.kind != asyncloop::MutationKind::Create)
+            continue;
+
+        if(mutation.entity.kind == asyncloop::EntityKind::KeyFrame)
+        {
+            const auto child_it = keyframe_by_id.find(mutation.entity.id);
+            const auto parent_it = keyframe_by_id.find(mutation.related.id);
+            const auto corrected_parent =
+                corrected_tcw.find(mutation.related.id);
+            if(child_it == keyframe_by_id.end() ||
+               parent_it == keyframe_by_id.end() ||
+               corrected_parent == corrected_tcw.end() ||
+               !child_it->second || !parent_it->second ||
+               child_it->second->isBad() || parent_it->second->isBad())
+            {
+                ++mnAsyncLoopConflict;
+                return false;
+            }
+
+            const Sophus::SE3f world_from_parent_corrected =
+                corrected_parent->second.inverse();
+            const Sophus::SE3f world_from_parent_live =
+                parent_it->second->GetPoseInverse();
+            const Sophus::SE3f world_from_child_live =
+                child_it->second->GetPoseInverse();
+            const Sophus::SE3f world_from_child_corrected =
+                world_from_parent_corrected *
+                world_from_parent_live.inverse() *
+                world_from_child_live;
+
+            OptimizerGPU::DetachedPoseUpdate update;
+            update.id = mutation.entity.id;
+            update.keyframe = child_it->second;
+            update.pose = world_from_child_corrected.inverse();
+            rebased_poses.push_back(update);
+            corrected_tcw[update.id] = update.pose;
+        }
+        else if(mutation.entity.kind ==
+                asyncloop::EntityKind::MapPoint)
+        {
+            const auto point_it = point_by_id.find(mutation.entity.id);
+            const auto reference_it =
+                keyframe_by_id.find(mutation.related.id);
+            const auto corrected_reference =
+                corrected_tcw.find(mutation.related.id);
+            if(point_it == point_by_id.end() ||
+               reference_it == keyframe_by_id.end() ||
+               corrected_reference == corrected_tcw.end() ||
+               !point_it->second || !reference_it->second ||
+               point_it->second->isBad() ||
+               reference_it->second->isBad())
+            {
+                ++mnAsyncLoopConflict;
+                return false;
+            }
+
+            const Eigen::Vector3f live_world =
+                point_it->second->GetWorldPos();
+            const Eigen::Vector3f reference_point =
+                reference_it->second->GetPose() * live_world;
+            OptimizerGPU::DetachedPointUpdate update;
+            update.id = mutation.entity.id;
+            update.map_point = point_it->second;
+            update.position =
+                corrected_reference->second.inverse() * reference_point;
+            rebased_points.push_back(update);
+        }
+    }
+
+    // Validate every handle before the first live-map write.
+    for(const auto& update : delta.poses)
+        if(!update.keyframe || update.keyframe->isBad() ||
+           update.keyframe->GetMap() != pLoopMap)
+            return false;
+    for(const auto& update : delta.points)
+        if(!update.map_point || update.map_point->isBad() ||
+           update.map_point->GetMap() != pLoopMap)
+            return false;
+    for(const AsyncFusionReplacement& replacement : fusion_plan)
+        if(!replacement.loser || !replacement.winner ||
+           replacement.loser == replacement.winner ||
+           replacement.loser->isBad() || replacement.winner->isBad() ||
+           replacement.loser->GetMap() != pLoopMap ||
+           replacement.winner->GetMap() != pLoopMap)
+            return false;
+    for(const AsyncObservationAddition& addition : observation_additions)
+        if(!addition.map_point || addition.map_point->isBad() ||
+           addition.map_point->GetMap() != pLoopMap)
+            return false;
+
+    asyncloop::CommitPlan commit_plan;
+    commit_plan.snapshot_id = transaction_snapshot.id;
+    commit_plan.snapshot_epoch = transaction_snapshot.epoch;
+    commit_plan.read_set = transaction_snapshot.read_set;
+
+    unordered_set<asyncloop::EntityKey,
+                  asyncloop::EntityKeyHash> write_entities;
+    const auto add_write = [&](const asyncloop::EntityKey& entity,
+                               asyncloop::MutationKind kind)
+    {
+        if(write_entities.insert(entity).second)
+            commit_plan.writes.push_back(
+                asyncloop::WriteIntent{
+                    entity,
+                    pLoopMap->AsyncLoopTransactions().versionOf(entity),
+                    kind});
+    };
+    for(const auto& update : delta.poses)
+        add_write({asyncloop::EntityKind::KeyFrame, update.id},
+                  asyncloop::MutationKind::Pose);
+    for(const auto& update : rebased_poses)
+        add_write({asyncloop::EntityKind::KeyFrame, update.id},
+                  asyncloop::MutationKind::Pose);
+    for(const auto& update : delta.points)
+        add_write({asyncloop::EntityKind::MapPoint, update.id},
+                  asyncloop::MutationKind::Position);
+    for(const auto& update : rebased_points)
+        add_write({asyncloop::EntityKind::MapPoint, update.id},
+                  asyncloop::MutationKind::Position);
+    for(const auto& replacement : fusion_plan)
+    {
+        add_write({asyncloop::EntityKind::MapPoint,
+                   replacement.loser->mnId},
+                  asyncloop::MutationKind::Replace);
+        add_write({asyncloop::EntityKind::MapPoint,
+                   replacement.winner->mnId},
+                  asyncloop::MutationKind::Replace);
+    }
+
+    const auto commit_start = std::chrono::steady_clock::now();
+    const asyncloop::CommitResult result =
+        pLoopMap->AsyncLoopTransactions().commit(
+            commit_plan,
+            [&]()
+            {
+                for(const auto& update : delta.poses)
+                    update.keyframe->SetPose(update.pose);
+                for(const auto& update : rebased_poses)
+                    update.keyframe->SetPose(update.pose);
+                for(const auto& update : delta.points)
+                    update.map_point->SetWorldPos(update.position);
+                for(const auto& update : rebased_points)
+                    update.map_point->SetWorldPos(update.position);
+
+                for(const AsyncFusionReplacement& replacement : fusion_plan)
+                    replacement.loser->Replace(replacement.winner);
+
+                for(const AsyncObservationAddition& addition :
+                    observation_additions)
+                {
+                    mpCurrentKF->AddMapPoint(
+                        addition.map_point, addition.feature_index);
+                    addition.map_point->AddObservation(
+                        mpCurrentKF, addition.feature_index);
+                    addition.map_point->ComputeDistinctiveDescriptors();
+                }
+
+                for(const auto& update : delta.points)
+                    if(!update.map_point->isBad())
+                        update.map_point->UpdateNormalAndDepth();
+                for(const auto& update : rebased_points)
+                    if(!update.map_point->isBad())
+                        update.map_point->UpdateNormalAndDepth();
+                for(KeyFrame* pKF : mvpCurrentConnectedKFs)
+                    if(pKF && !pKF->isBad())
+                        pKF->UpdateConnections();
+
+                mpLoopMatchedKF->AddLoopEdge(mpCurrentKF);
+                mpCurrentKF->AddLoopEdge(mpLoopMatchedKF);
+                pLoopMap->IncreaseChangeIndex();
+                mpAtlas->InformNewBigChange();
+                return true;
+            });
+
+    const auto commit_end = std::chrono::steady_clock::now();
+    mvAsyncCaptureMs.push_back(
+        std::chrono::duration_cast<
+            std::chrono::duration<double,std::milli>>(
+                capture_end - capture_start).count());
+    mvAsyncSolveMs.push_back(
+        std::chrono::duration_cast<
+            std::chrono::duration<double,std::milli>>(
+                solve_end - capture_end).count());
+    mvAsyncCommitMs.push_back(
+        std::chrono::duration_cast<
+            std::chrono::duration<double,std::milli>>(
+                commit_end - commit_start).count());
+
+    if(!result)
+    {
+        ++mnAsyncLoopConflict;
+        return false;
+    }
+
+    ++mnAsyncLoopCommitted;
+    mLastLoopKFid = mpCurrentKF->mnId;
+    return true;
+}
+
 
 void LoopClosing::CorrectLoop()
 {
