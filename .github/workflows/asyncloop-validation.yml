@@ -25,7 +25,9 @@ jobs:
         with:
           submodules: recursive
       - name: Archive complete source tree
-        run: tar --exclude=.git -czf FastLoop-AsyncLoop-source.tar.gz .
+        run: tar --exclude=.git -czf "${RUNNER_TEMP}/FastLoop-AsyncLoop-source.tar.gz" .
+      - name: Stage source snapshot
+        run: cp "${RUNNER_TEMP}/FastLoop-AsyncLoop-source.tar.gz" .
       - uses: actions/upload-artifact@v4
         with:
           name: FastLoop-AsyncLoop-source

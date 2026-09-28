@@ -3,19 +3,23 @@ set -euo pipefail
 
 compiler="${CXX:-g++}"
 flags=(-std=c++14 -Wall -Wextra -Wpedantic -Werror -pthread -Iinclude)
-sources=(src/TransactionEngine.cc src/AsyncController.cc src/Pose3.cc)
+sources=(
+  src/AsyncLoop/TransactionEngine.cc
+  src/AsyncLoop/AsyncController.cc
+  src/AsyncLoop/Pose3.cc
+)
 build_dir="${ASYNCLOOP_BUILD_DIR:-build-local}"
 
 mkdir -p "${build_dir}"
 
 "${compiler}" "${flags[@]}" \
-  src/TransactionEngine.cc tests/TransactionEngineTests.cc \
+  src/AsyncLoop/TransactionEngine.cc tests/asyncloop/TransactionEngineTests.cc \
   -o "${build_dir}/transaction_tests"
 "${compiler}" "${flags[@]}" \
-  "${sources[@]}" tests/AsyncControllerTests.cc \
+  "${sources[@]}" tests/asyncloop/AsyncControllerTests.cc \
   -o "${build_dir}/controller_tests"
 "${compiler}" "${flags[@]}" \
-  "${sources[@]}" tests/Pose3Tests.cc \
+  "${sources[@]}" tests/asyncloop/Pose3Tests.cc \
   -o "${build_dir}/pose_tests"
 
 "${build_dir}/transaction_tests"
