@@ -326,6 +326,29 @@ namespace gpu {
             DR.setIdentity();   
         }
 
+        ImuCamPose(const Eigen::Matrix3d &_Rwc,
+                   const Eigen::Vector3d &_twc,
+                   const Eigen::Matrix3d &_Rcb,
+                   const Eigen::Vector3d &_tcb): its(0)
+        {
+            // Detached pose-graph constructor. All mutable KeyFrame state is
+            // captured by the caller before asynchronous optimization starts.
+            tcb[0] = _tcb.template cast<T>();
+            Rcb[0] = _Rcb.template cast<T>();
+            Rbc[0] = Rcb[0].transpose();
+            tbc[0] = -Rbc[0] * tcb[0];
+            twb = _Rwc.template cast<T>() * tcb[0] +
+                  _twc.template cast<T>();
+            Rwb = _Rwc.template cast<T>() * Rcb[0];
+            Rcw[0] = _Rwc.transpose().template cast<T>();
+            tcw[0] = -Rcw[0] * _twc.template cast<T>();
+            pCamera[0] = nullptr;
+            bf = T(0);
+            num_cams = 1;
+            Rwb0 = Rwb;
+            DR.setIdentity();
+        }
+
         ImuCamPose(Eigen::Matrix3d &_Rwc, Eigen::Vector3d &_twc, ORB_SLAM3::KeyFrame* pKF): its(0)
         {
             // This is only for posegrpah, we do not care about multicamera

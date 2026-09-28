@@ -15,6 +15,11 @@ class PoseGraphOptimizer {
 
     void add_pose(const int id, ORB_SLAM3::KeyFrame* pKF);
     void add_pose(const int id, Eigen::Matrix3d &Rwc, Eigen::Vector3d &twc, ORB_SLAM3::KeyFrame* pKF);
+    void add_pose_detached(const int id,
+                           const Eigen::Matrix3d &Rwc,
+                           const Eigen::Vector3d &twc,
+                           const Eigen::Matrix3d &Rcb,
+                           const Eigen::Vector3d &tcb);
     
     SE3Pose get_pose(const int id);
     void set_fixed(const int id, const bool fixed);
@@ -71,6 +76,13 @@ namespace ORB_SLAM3 {
 
     void PoseGraphOptimizerInterface::add_pose(const int id, Eigen::Matrix3d &Rwc, Eigen::Vector3d &twc, ORB_SLAM3::KeyFrame* pKF) {
         pgo->add_pose(id, Rwc, twc, pKF);
+    }
+
+    void PoseGraphOptimizerInterface::add_pose_detached(
+        const int id, const Eigen::Matrix3d &Rwc,
+        const Eigen::Vector3d &twc, const Eigen::Matrix3d &Rcb,
+        const Eigen::Vector3d &tcb) {
+        pgo->add_pose_detached(id, Rwc, twc, Rcb, tcb);
     }
 
     // void PoseGraphOptimizerInterface::add_pose(const int id, const Pose4DoF<double> & pose) {
@@ -135,6 +147,14 @@ namespace ORB_SLAM3 {
 
     void PoseGraphOptimizer::add_pose(const int id, Eigen::Matrix3d &Rwc, Eigen::Vector3d &twc, ORB_SLAM3::KeyFrame* pKF) {
         poses[id] = Pose(Rwc, twc, pKF);
+        pose_desc.add_vertex(id, &poses[id]);
+    }
+
+    void PoseGraphOptimizer::add_pose_detached(
+        const int id, const Eigen::Matrix3d &Rwc,
+        const Eigen::Vector3d &twc, const Eigen::Matrix3d &Rcb,
+        const Eigen::Vector3d &tcb) {
+        poses[id] = Pose(Rwc, twc, Rcb, tcb);
         pose_desc.add_vertex(id, &poses[id]);
     }
 

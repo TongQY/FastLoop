@@ -5961,6 +5961,8 @@ EssentialGraphSnapshot CaptureEssentialGraph4DoF(
         vertex.keyframe = pKF;
         vertex.initial_R = Swc.rotation().toRotationMatrix();
         vertex.initial_t = Swc.translation();
+        vertex.Rcb = pKF->mImuCalib.mTcb.rotationMatrix().cast<double>();
+        vertex.tcb = pKF->mImuCalib.mTcb.translation().cast<double>();
         vertex.fixed = (pKF == pLoopKF);
         snapshot.vertices.push_back(vertex);
     }
@@ -6077,9 +6079,9 @@ EssentialGraphDelta OptimizeEssentialGraph4DoFDetached(
 
     for(const DetachedPoseVertex& vertex : snapshot.vertices)
     {
-        Eigen::Matrix3d R = vertex.initial_R;
-        Eigen::Vector3d t = vertex.initial_t;
-        optimizer.add_pose(static_cast<int>(vertex.id), R, t, vertex.keyframe);
+        optimizer.add_pose_detached(static_cast<int>(vertex.id),
+                                    vertex.initial_R, vertex.initial_t,
+                                    vertex.Rcb, vertex.tcb);
         if(vertex.fixed)
             optimizer.set_fixed(static_cast<int>(vertex.id), true);
     }

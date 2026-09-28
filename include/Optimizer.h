@@ -110,6 +110,8 @@ namespace OptimizerGPU {
         KeyFrame* keyframe = nullptr;
         Eigen::Matrix3d initial_R = Eigen::Matrix3d::Identity();
         Eigen::Vector3d initial_t = Eigen::Vector3d::Zero();
+        Eigen::Matrix3d Rcb = Eigen::Matrix3d::Identity();
+        Eigen::Vector3d tcb = Eigen::Vector3d::Zero();
         bool fixed = false;
     };
 
