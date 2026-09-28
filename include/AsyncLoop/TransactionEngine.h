@@ -21,7 +21,8 @@ enum class EntityKind : std::uint8_t {
   MapPoint,
   Observation,
   CovisibilityEdge,
-  LoopEdge
+  LoopEdge,
+  Map
 };
 
 struct EntityKey {

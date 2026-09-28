@@ -22,6 +22,7 @@
 
 #include "MapPoint.h"
 #include "KeyFrame.h"
+#include "AsyncLoop/TransactionEngine.h"
 
 #include <set>
 #include <pangolin/pangolin.h>
@@ -109,6 +110,11 @@ public:
 
     int GetMapChangeIndex();
     void IncreaseChangeIndex();
+
+    asyncloop::TransactionEngine& AsyncLoopTransactions();
+    void RecordAsyncKeyFrame(KeyFrame* pKF, KeyFrame* pParent);
+    void RecordAsyncMapPoint(MapPoint* pMP, KeyFrame* pReference);
+    void AsyncLoopBarrier();
     int GetLastMapChange();
     void SetLastMapChange(int currentChangeId);
 
@@ -157,6 +163,7 @@ public:
 
 protected:
 
+    asyncloop::TransactionEngine mAsyncLoopTransactions;
     long unsigned int mnId;
 
     std::set<MapPoint*> mspMapPoints;

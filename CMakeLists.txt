@@ -80,6 +80,9 @@ src/System.cc
 src/Tracking.cc
 src/LocalMapping.cc
 src/LoopClosing.cc
+src/AsyncLoop/TransactionEngine.cc
+src/AsyncLoop/AsyncController.cc
+src/AsyncLoop/Pose3.cc
 src/ORBextractor.cc
 src/ORBmatcher.cc
 src/FrameDrawer.cc
@@ -116,6 +119,9 @@ include/System.h
 include/Tracking.h
 include/LocalMapping.h
 include/LoopClosing.h
+include/AsyncLoop/TransactionEngine.h
+include/AsyncLoop/AsyncController.h
+include/AsyncLoop/Pose3.h
 include/ORBextractor.h
 include/ORBmatcher.h
 include/FrameDrawer.h

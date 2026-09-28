@@ -5926,6 +5926,201 @@ void OptimizeEssentialGraph4DoF(Map* pMap, KeyFrame* pLoopKF, KeyFrame* pCurKF,
     pMap->IncreaseChangeIndex();
     // std::cout << "Finished point correction." << std::endl;
 }
+
+EssentialGraphSnapshot CaptureEssentialGraph4DoF(
+    Map* pMap, KeyFrame* pLoopKF, KeyFrame* pCurKF,
+    const LoopClosing::KeyFrameAndPose &NonCorrectedSim3,
+    const LoopClosing::KeyFrameAndPose &CorrectedSim3,
+    const map<KeyFrame *, set<KeyFrame *> > &LoopConnections)
+{
+    EssentialGraphSnapshot snapshot;
+    snapshot.map = pMap;
+    snapshot.max_pose_id = pMap->GetMaxKFid();
+
+    const vector<KeyFrame*> vpKFs = pMap->GetAllKeyFrames();
+    const vector<MapPoint*> vpMPs = pMap->GetAllMapPoints();
+    map<long unsigned int, g2o::Sim3> scw_by_id;
+
+    for(KeyFrame* pKF : vpKFs)
+    {
+        if(!pKF || pKF->isBad())
+            continue;
+        g2o::Sim3 Siw;
+        const auto corrected = CorrectedSim3.find(pKF);
+        if(corrected != CorrectedSim3.end())
+            Siw = corrected->second;
+        else
+        {
+            const Sophus::SE3d Tcw = pKF->GetPose().cast<double>();
+            Siw = g2o::Sim3(Tcw.unit_quaternion(), Tcw.translation(), 1.0);
+        }
+        scw_by_id[pKF->mnId] = Siw;
+        const g2o::Sim3 Swc = Siw.inverse();
+        DetachedPoseVertex vertex;
+        vertex.id = pKF->mnId;
+        vertex.keyframe = pKF;
+        vertex.initial_R = Swc.rotation().toRotationMatrix();
+        vertex.initial_t = Swc.translation();
+        vertex.fixed = (pKF == pLoopKF);
+        snapshot.vertices.push_back(vertex);
+    }
+
+    const Eigen::Matrix<double,6,6> information =
+        Eigen::Matrix<double,6,6>::Identity();
+    set<pair<long unsigned int,long unsigned int>> inserted;
+    const auto add_factor = [&](long unsigned int id1,
+                                long unsigned int id2,
+                                const g2o::Sim3& S12)
+    {
+        if(id1 == id2)
+            return;
+        const auto ordered = make_pair(min(id1,id2), max(id1,id2));
+        if(!inserted.insert(ordered).second)
+            return;
+        DetachedPoseFactor factor;
+        factor.id1 = id1;
+        factor.id2 = id2;
+        factor.measurement = Sophus::SE3d(S12.rotation(), S12.translation());
+        factor.information = information;
+        snapshot.factors.push_back(factor);
+    };
+
+    const int minFeat = 100;
+    for(const auto& connection : LoopConnections)
+    {
+        KeyFrame* pKF = connection.first;
+        if(!pKF || pKF->isBad() || !scw_by_id.count(pKF->mnId))
+            continue;
+        for(KeyFrame* pConnected : connection.second)
+        {
+            if(!pConnected || pConnected->isBad() ||
+               !scw_by_id.count(pConnected->mnId))
+                continue;
+            if((pKF != pCurKF || pConnected != pLoopKF) &&
+               pKF->GetWeight(pConnected) < minFeat)
+                continue;
+            add_factor(pKF->mnId, pConnected->mnId,
+                       scw_by_id[pKF->mnId] *
+                       scw_by_id[pConnected->mnId].inverse());
+        }
+    }
+
+    for(KeyFrame* pKF : vpKFs)
+    {
+        if(!pKF || pKF->isBad() || !scw_by_id.count(pKF->mnId))
+            continue;
+        g2o::Sim3 Siw = scw_by_id[pKF->mnId];
+        const auto non_corrected = NonCorrectedSim3.find(pKF);
+        if(non_corrected != NonCorrectedSim3.end())
+            Siw = non_corrected->second;
+
+        const auto relative_to = [&](KeyFrame* pOther)
+        {
+            if(!pOther || pOther->isBad() || !scw_by_id.count(pOther->mnId))
+                return;
+            g2o::Sim3 Sjw = scw_by_id[pOther->mnId];
+            const auto found = NonCorrectedSim3.find(pOther);
+            if(found != NonCorrectedSim3.end())
+                Sjw = found->second;
+            add_factor(pKF->mnId, pOther->mnId, Siw * Sjw.inverse());
+        };
+
+        relative_to(pKF->GetParent());
+        relative_to(pKF->mPrevKF);
+        const set<KeyFrame*> loop_edges = pKF->GetLoopEdges();
+        for(KeyFrame* pLoopEdge : loop_edges)
+            if(pLoopEdge && pLoopEdge->mnId < pKF->mnId)
+                relative_to(pLoopEdge);
+
+        const vector<KeyFrame*> covisibles = pKF->GetCovisiblesByWeight(minFeat);
+        for(KeyFrame* pConnected : covisibles)
+        {
+            if(!pConnected || pConnected == pKF->GetParent() ||
+               pConnected == pKF->mPrevKF || pConnected == pKF->mNextKF ||
+               pKF->hasChild(pConnected) || loop_edges.count(pConnected) ||
+               pConnected->isBad() || pConnected->mnId >= pKF->mnId)
+                continue;
+            relative_to(pConnected);
+        }
+    }
+
+    for(MapPoint* pMP : vpMPs)
+    {
+        if(!pMP || pMP->isBad())
+            continue;
+        KeyFrame* pReference = pMP->GetReferenceKeyFrame();
+        if(!pReference || !scw_by_id.count(pReference->mnId))
+            continue;
+        DetachedMapPoint point;
+        point.id = pMP->mnId;
+        point.map_point = pMP;
+        point.reference_kf_id = pReference->mnId;
+        point.world_position = pMP->GetWorldPos().cast<double>();
+        point.reference_scw = scw_by_id[pReference->mnId];
+        snapshot.points.push_back(point);
+    }
+    return snapshot;
+}
+
+EssentialGraphDelta OptimizeEssentialGraph4DoFDetached(
+    const EssentialGraphSnapshot& snapshot)
+{
+    EssentialGraphDelta delta;
+    delta.map = snapshot.map;
+    if(!pose_graph_optimizer)
+        init_pgo(max(1000u, snapshot.max_pose_id + 1), 1000);
+
+    auto& optimizer = *pose_graph_optimizer;
+    optimizer.clear();
+    optimizer.reserve(snapshot.max_pose_id + 1,
+                      max<size_t>(1, snapshot.factors.size()));
+
+    for(const DetachedPoseVertex& vertex : snapshot.vertices)
+    {
+        Eigen::Matrix3d R = vertex.initial_R;
+        Eigen::Vector3d t = vertex.initial_t;
+        optimizer.add_pose(static_cast<int>(vertex.id), R, t, vertex.keyframe);
+        if(vertex.fixed)
+            optimizer.set_fixed(static_cast<int>(vertex.id), true);
+    }
+    for(const DetachedPoseFactor& factor : snapshot.factors)
+        optimizer.add_factor(static_cast<int>(factor.id1),
+                             static_cast<int>(factor.id2),
+                             factor.measurement,
+                             factor.information.data());
+
+    optimizer.optimize(20, 1e-4, false);
+
+    map<long unsigned int, g2o::Sim3> corrected_swc;
+    for(const DetachedPoseVertex& vertex : snapshot.vertices)
+    {
+        const auto pose = optimizer.get_pose(static_cast<int>(vertex.id));
+        const g2o::Sim3 CorrectedSiw(pose.R, pose.t, 1.0);
+        corrected_swc[vertex.id] = CorrectedSiw.inverse();
+        DetachedPoseUpdate update;
+        update.id = vertex.id;
+        update.keyframe = vertex.keyframe;
+        update.pose = Sophus::SE3d(
+            CorrectedSiw.rotation(), CorrectedSiw.translation()).cast<float>();
+        delta.poses.push_back(update);
+    }
+
+    for(const DetachedMapPoint& point : snapshot.points)
+    {
+        const auto corrected = corrected_swc.find(point.reference_kf_id);
+        if(corrected == corrected_swc.end())
+            continue;
+        DetachedPointUpdate update;
+        update.id = point.id;
+        update.map_point = point.map_point;
+        update.position = corrected->second.map(
+            point.reference_scw.map(point.world_position)).cast<float>();
+        delta.points.push_back(update);
+    }
+    return delta;
+}
+
+
 }
 
 } //namespace ORB_SLAM

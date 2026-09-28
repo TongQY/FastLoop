@@ -102,6 +102,85 @@ public:
 };
 
 namespace OptimizerGPU {
+
+    struct DetachedPoseVertex
+    {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+        long unsigned int id = 0;
+        KeyFrame* keyframe = nullptr;
+        Eigen::Matrix3d initial_R = Eigen::Matrix3d::Identity();
+        Eigen::Vector3d initial_t = Eigen::Vector3d::Zero();
+        bool fixed = false;
+    };
+
+    struct DetachedPoseFactor
+    {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+        long unsigned int id1 = 0;
+        long unsigned int id2 = 0;
+        Sophus::SE3d measurement;
+        Eigen::Matrix<double,6,6> information =
+            Eigen::Matrix<double,6,6>::Identity();
+    };
+
+    struct DetachedMapPoint
+    {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+        long unsigned int id = 0;
+        MapPoint* map_point = nullptr;
+        long unsigned int reference_kf_id = 0;
+        Eigen::Vector3d world_position = Eigen::Vector3d::Zero();
+        g2o::Sim3 reference_scw;
+    };
+
+    struct EssentialGraphSnapshot
+    {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+        Map* map = nullptr;
+        unsigned int max_pose_id = 0;
+        std::vector<DetachedPoseVertex,
+            Eigen::aligned_allocator<DetachedPoseVertex>> vertices;
+        std::vector<DetachedPoseFactor,
+            Eigen::aligned_allocator<DetachedPoseFactor>> factors;
+        std::vector<DetachedMapPoint,
+            Eigen::aligned_allocator<DetachedMapPoint>> points;
+    };
+
+    struct DetachedPoseUpdate
+    {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+        long unsigned int id = 0;
+        KeyFrame* keyframe = nullptr;
+        Sophus::SE3f pose;
+    };
+
+    struct DetachedPointUpdate
+    {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+        long unsigned int id = 0;
+        MapPoint* map_point = nullptr;
+        Eigen::Vector3f position = Eigen::Vector3f::Zero();
+    };
+
+    struct EssentialGraphDelta
+    {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+        Map* map = nullptr;
+        std::vector<DetachedPoseUpdate,
+            Eigen::aligned_allocator<DetachedPoseUpdate>> poses;
+        std::vector<DetachedPointUpdate,
+            Eigen::aligned_allocator<DetachedPointUpdate>> points;
+    };
+
+    EssentialGraphSnapshot CaptureEssentialGraph4DoF(
+        Map* pMap, KeyFrame* pLoopKF, KeyFrame* pCurKF,
+        const LoopClosing::KeyFrameAndPose &NonCorrectedSim3,
+        const LoopClosing::KeyFrameAndPose &CorrectedSim3,
+        const map<KeyFrame *, set<KeyFrame *> > &LoopConnections);
+
+    EssentialGraphDelta OptimizeEssentialGraph4DoFDetached(
+        const EssentialGraphSnapshot& snapshot);
+
     void OptimizeEssentialGraph4DoF(Map* pMap, KeyFrame* pLoopKF, KeyFrame* pCurKF,
                                        const LoopClosing::KeyFrameAndPose &NonCorrectedSim3,
                                        const LoopClosing::KeyFrameAndPose &CorrectedSim3,

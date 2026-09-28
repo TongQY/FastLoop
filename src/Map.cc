@@ -344,6 +344,40 @@ void Map::IncreaseChangeIndex()
     mnMapChange++;
 }
 
+asyncloop::TransactionEngine& Map::AsyncLoopTransactions()
+{
+    return mAsyncLoopTransactions;
+}
+
+void Map::RecordAsyncKeyFrame(KeyFrame* pKF, KeyFrame* pParent)
+{
+    if(!pKF)
+        return;
+    const asyncloop::EntityKey entity{asyncloop::EntityKind::KeyFrame, pKF->mnId};
+    const asyncloop::EntityKey related{
+        asyncloop::EntityKind::KeyFrame, pParent ? pParent->mnId : 0};
+    mAsyncLoopTransactions.recordMutation(
+        entity, asyncloop::MutationKind::Create, related);
+}
+
+void Map::RecordAsyncMapPoint(MapPoint* pMP, KeyFrame* pReference)
+{
+    if(!pMP)
+        return;
+    const asyncloop::EntityKey entity{asyncloop::EntityKind::MapPoint, pMP->mnId};
+    const asyncloop::EntityKey related{
+        asyncloop::EntityKind::KeyFrame, pReference ? pReference->mnId : 0};
+    mAsyncLoopTransactions.recordMutation(
+        entity, asyncloop::MutationKind::Create, related);
+}
+
+void Map::AsyncLoopBarrier()
+{
+    mAsyncLoopTransactions.recordMutation(
+        asyncloop::EntityKey{asyncloop::EntityKind::Map, mnId},
+        asyncloop::MutationKind::GraphTopology);
+}
+
 int Map::GetLastMapChange()
 {
     unique_lock<mutex> lock(mMutexMap);
