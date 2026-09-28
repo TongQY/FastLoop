@@ -23,8 +23,9 @@ RUN apt-get -y install libopencv-dev libopencv-core-dev libeigen3-dev libboost-s
 # Install CUDA Toolkit 12.6
 # RUN apt-get -y install cuda-toolkit-12-6 cuda-gdb-12-6
 # nvcc and the CUDA development libraries are already provided by the
-# nvidia/cuda devel image. Graphite currently uses EigenLDLT, so cuDSS is not
-# required for the default AsyncLoop build.
+# nvidia/cuda devel image. Graphite's current CMake configuration still
+# requires the cuDSS package even when the EigenLDLT solver is selected.
+RUN apt-get -y install cudss-cuda-12
 
 # ORB-SLAM3 Stuff
 # Install pangolin
