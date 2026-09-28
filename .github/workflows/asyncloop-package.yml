@@ -1,0 +1,38 @@
+name: AsyncLoop source package
+
+on:
+  push:
+    branches: [codex/asyncloop]
+    paths:
+      - ".github/workflows/asyncloop-package.yml"
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Stage runnable source package
+        run: |
+          mkdir -p "${RUNNER_TEMP}/AsyncLoop"
+          rsync -a \
+            --exclude=".git" \
+            --exclude="Examples_old" \
+            --exclude="evaluation/Ground_truth" \
+            --exclude="Examples/Monocular-Inertial/TUM_IMU/*.txt" \
+            --exclude="Examples/Stereo-Inertial/TUM_IMU/*.txt" \
+            ./ "${RUNNER_TEMP}/AsyncLoop/"
+          printf '%s\n' \
+            "This package contains the full buildable AsyncLoop source tree," \
+            "recursive git submodules, configuration files and ORB vocabulary." \
+            "Redundant Examples_old files, evaluation ground truth and large" \
+            "TUM timestamp lists were omitted to keep the ZIP deliverable." \
+            > "${RUNNER_TEMP}/AsyncLoop/PACKAGE_CONTENTS.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AsyncLoop-complete-source
+          path: ${{ runner.temp }}/AsyncLoop
+          if-no-files-found: error
+          compression-level: 9
