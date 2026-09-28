@@ -1,0 +1,33 @@
+name: AsyncLoop validation
+
+on:
+  push:
+    branches: [codex/asyncloop]
+  workflow_dispatch:
+
+jobs:
+  core-tests:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and test transaction core
+        run: scripts/run_asyncloop_core_tests.sh
+      - name: Sanitizer check
+        env:
+          ASYNCLOOP_SANITIZE: "1"
+          ASAN_OPTIONS: detect_leaks=0
+        run: scripts/run_asyncloop_core_tests.sh
+
+  source-snapshot:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Archive complete source tree
+        run: tar --exclude=.git -czf FastLoop-AsyncLoop-source.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FastLoop-AsyncLoop-source
+          path: FastLoop-AsyncLoop-source.tar.gz
+          if-no-files-found: error
