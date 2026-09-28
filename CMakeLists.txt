@@ -157,6 +157,7 @@ include/Kernels/CudaWrappers/CudaKeyPoint.h
 include/Kernels/LoopClosingCudaKeyFrameStorage.h
 include/Kernels/SearchByProjectionKernel.h
 include/Kernels/SearchAndFuseKernel.h
+include/Kernels/SearchAndFusePlan.h
 include/GPUPose.h
 include/PGOTypes.h
 include/PGOInterface.h

@@ -9,15 +9,9 @@
 #include "CameraModels/GeometricCamera.h"
 #include <Eigen/Core>
 #include <csignal> 
+#include "SearchAndFusePlan.h"
 
 #define MAX_CONNECTED_KF_COUNT 40
-
-struct SearchAndFuseObservation
-{
-    ORB_SLAM3::KeyFrame* keyframe = nullptr;
-    ORB_SLAM3::MapPoint* map_point = nullptr;
-    size_t feature_index = 0;
-};
 
 
 class SearchAndFuseKernel{

@@ -28,6 +28,7 @@
 #include"MapPoint.h"
 #include"KeyFrame.h"
 #include"Frame.h"
+#include"Kernels/SearchAndFusePlan.h"
 
 
 namespace ORB_SLAM3
