@@ -1,6 +1,6 @@
 # FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04
 # FROM nvidia/cuda:12.6.3-runtime-ubuntu22.04
-FROM nvidia/cuda:12.8.1-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.1-devel-ubuntu22.04
 # FROM ubuntu:22.04
 ENV NVIDIA_DRIVER_CAPABILITIES=all
 ENV NVIDIA_VISIBLE_DEVICES=all
@@ -22,13 +22,16 @@ RUN apt-get -y install libopencv-dev libopencv-core-dev libeigen3-dev libboost-s
 
 # Install CUDA Toolkit 12.6
 # RUN apt-get -y install cuda-toolkit-12-6 cuda-gdb-12-6
-RUN apt-get -y install cuda-toolkit-12-8 cuda-gdb-12-8 cudss-cuda-12
+# nvcc and the CUDA development libraries are already provided by the
+# nvidia/cuda devel image. Graphite currently uses EigenLDLT, so cuDSS is not
+# required for the default AsyncLoop build.
 
 # ORB-SLAM3 Stuff
 # Install pangolin
 RUN apt-get -y install python3-dev python3-setuptools
 RUN git clone --branch v0.6 --recursive https://github.com/stevenlovegrove/Pangolin.git && \
 cd Pangolin && \
+sed -i 's/ && !defined(__CUDACC__)//' include/pangolin/gl/glsl.h src/python/pypangolin/glsl.hpp && \
 cmake -B build -GNinja && \
 cmake --build build && \
 cd build && ninja install

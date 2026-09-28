@@ -1,0 +1,36 @@
+name: AsyncLoop integration build
+
+on:
+  push:
+    branches: [codex/asyncloop]
+    paths:
+      - "CMakeLists.txt"
+      - "Dockerfile"
+      - "build.sh"
+      - "include/**"
+      - "src/**"
+      - ".gitmodules"
+      - ".github/workflows/asyncloop-integration-build.yml"
+  workflow_dispatch:
+
+jobs:
+  full-build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build CUDA toolchain image
+        run: docker build --tag asyncloop-ci .
+      - name: Compile FastLoop with AsyncLoop
+        run: |
+          docker run --rm \
+            --volume "${PWD}:/workspace/FastLoop" \
+            --workdir /workspace/FastLoop \
+            asyncloop-ci \
+            bash -lc "./build.sh"
+      - name: Verify primary outputs
+        run: |
+          test -f lib/libORB_SLAM3.so
+          test -x Examples/Stereo-Inertial/stereo_inertial_euroc
